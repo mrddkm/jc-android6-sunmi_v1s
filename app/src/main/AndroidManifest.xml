@@ -8,12 +8,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Sunmi printer service permissions -->
-    <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN"
+    <uses-permission
+        android:name="android.permission.BIND_DEVICE_ADMIN"
         tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"
         tools:ignore="ScopedStorage" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
     <!-- Camera features (optional for compatibility) -->
@@ -30,10 +33,10 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:requestLegacyExternalStorage="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.SunmiV1s"
-        android:requestLegacyExternalStorage="true">
+        android:theme="@style/Theme.SunmiV1s">
 
         <activity
             android:name=".MainActivity"
@@ -51,27 +54,21 @@
         <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="fullSensor"
-            tools:replace="screenOrientation"
-            tools:ignore="DiscouragedApi" />
+            tools:ignore="DiscouragedApi"
+            tools:replace="screenOrientation" />
 
-        <!-- Query for Sunmi printer services -->
-        <!--suppress AndroidElementNotAllowed -->
-        <queries>
-            <!--suppress AndroidElementNotAllowed -->
-            <package android:name="woyou.aidlservice.jiuiv5" />
-            <!--suppress AndroidElementNotAllowed -->
-            <package android:name="com.sunmi.printerservice" />
-            <!--suppress AndroidElementNotAllowed -->
-            <intent>
-                <!--suppress AndroidElementNotAllowed -->
-                <action android:name="woyou.aidlservice.jiuiv5.IWoyouService" />
-            </intent>
-            <!--suppress AndroidElementNotAllowed -->
-            <intent>
-                <!--suppress AndroidElementNotAllowed -->
-                <action android:name="com.sunmi.peripheral.printer.InnerPrinterService" />
-            </intent>
-        </queries>
     </application>
+    <!-- Query for Sunmi printer services -->
+    <queries>
+        <package android:name="woyou.aidlservice.jiuiv5" />
+        <package android:name="com.sunmi.printerservice" />
+
+        <intent>
+            <action android:name="woyou.aidlservice.jiuiv5.IWoyouService" />
+        </intent>
+        <intent>
+            <action android:name="com.sunmi.peripheral.printer.InnerPrinterService" />
+        </intent>
+    </queries>
 
 </manifest>
