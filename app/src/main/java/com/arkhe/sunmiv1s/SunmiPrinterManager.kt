@@ -9,7 +9,7 @@ import android.util.Log
 
 /**
  * Sunmi Printer Manager
- * Connection and operation Sunmi V1s printer
+ * Manages Sunmi V1s printer connection and operations
  */
 class SunmiPrinterManager(private val context: Context) {
 
@@ -26,6 +26,7 @@ class SunmiPrinterManager(private val context: Context) {
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             try {
+                // Use reflection to get IWoyouService
                 val serviceClass = Class.forName("woyou.aidlservice.jiuiv5.IWoyouService\$Stub")
                 val asInterfaceMethod = serviceClass.getMethod("asInterface", IBinder::class.java)
                 woyouService = asInterfaceMethod.invoke(null, service)
@@ -108,8 +109,10 @@ class SunmiPrinterManager(private val context: Context) {
                 return false
             }
 
+            // Set alignment
             invokeMethod("setAlignment", alignment, null)
 
+            // Print text with font size
             invokeMethod("printTextWithFont", text, null, fontSize, null)
 
             true
