@@ -13,7 +13,7 @@ interface IWoyouService {
      * 打印指定字体大小文字
      * Print text with specified font size
      */
-    void printTextWithFont(String text, in ICallback callback, float size, in ICallback callback2);
+    void printTextWithFont(String text, String typeface, float fontsize, in ICallback callback);
 
     /**
      * 设置对齐模式
@@ -94,4 +94,22 @@ interface IWoyouService {
      * Exit buffer print mode and print
      */
     void exitPrinterBuffer(boolean commit);
+
+    /**
+     * 获取打印头温度
+     * Get print head temperature
+     */
+    int getPrintedLength();
+
+    /**
+     * 设置字体大小
+     * Set font size
+     */
+    void setFontSize(float fontsize, in ICallback callback);
+
+    /**
+     * 打印表格
+     * Print table
+     */
+    void printColumnsText(in String[] colsTextArr, in int[] colsWidthArr, in int[] colsAlign, in ICallback callback);
 }

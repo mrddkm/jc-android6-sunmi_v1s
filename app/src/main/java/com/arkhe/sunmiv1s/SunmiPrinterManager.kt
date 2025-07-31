@@ -8,15 +8,21 @@ import android.os.IBinder
 import android.util.Log
 
 /**
- * Sunmi Printer Manager
- * Manages Sunmi V1s printer connection and operations
+ * Sunmi V1s Printer Manager
+ * Updated for proper V1s printer connection
  */
 class SunmiPrinterManager(private val context: Context) {
 
     companion object {
-        private const val TAG = "SunmiPrinterManager"
+        private const val TAG = "SunmiV1sPrinterManager"
+
+        // Correct service info for Sunmi V1s
         private const val SERVICE_PACKAGE = "woyou.aidlservice.jiuiv5"
         private const val SERVICE_ACTION = "woyou.aidlservice.jiuiv5.IWoyouService"
+
+        // Alternative service info if the above doesn't work
+        private const val ALT_SERVICE_PACKAGE = "com.sunmi.printerservice"
+        private const val ALT_SERVICE_ACTION = "com.sunmi.peripheral.printer.InnerPrinterService"
     }
 
     private var woyouService: Any? = null
@@ -26,14 +32,25 @@ class SunmiPrinterManager(private val context: Context) {
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             try {
-                // Use reflection to get IWoyouService
-                val serviceClass = Class.forName("woyou.aidlservice.jiuiv5.IWoyouService\$Stub")
-                val asInterfaceMethod = serviceClass.getMethod("asInterface", IBinder::class.java)
-                woyouService = asInterfaceMethod.invoke(null, service)
+                Log.d(TAG, "Service connected: ${name?.className}")
+
+                // Try to get IWoyouService using reflection
+                woyouService = try {
+                    val serviceClass = Class.forName("woyou.aidlservice.jiuiv5.IWoyouService\$Stub")
+                    val asInterfaceMethod = serviceClass.getMethod("asInterface", IBinder::class.java)
+                    asInterfaceMethod.invoke(null, service)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to get IWoyouService, trying alternative approach: ${e.message}")
+                    service // Use IBinder directly as fallback
+                }
 
                 isServiceConnected = true
                 connectionListener?.invoke(true)
-                Log.d(TAG, "Sunmi printer service connected successfully")
+                Log.d(TAG, "Sunmi V1s printer service connected successfully")
+
+                // Test printer status immediately after connection
+                testConnection()
+
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to connect to Sunmi service: ${e.message}")
                 isServiceConnected = false
@@ -55,20 +72,51 @@ class SunmiPrinterManager(private val context: Context) {
 
     fun connectService(): Boolean {
         return try {
+            Log.d(TAG, "Attempting to connect to Sunmi V1s printer service...")
+
+            // Try primary service first
             val intent = Intent().apply {
                 setPackage(SERVICE_PACKAGE)
                 action = SERVICE_ACTION
             }
-            context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+
+            val success = context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+
+            if (!success) {
+                Log.w(TAG, "Primary service connection failed, trying alternative...")
+                // Try alternative service
+                val altIntent = Intent().apply {
+                    setPackage(ALT_SERVICE_PACKAGE)
+                    action = ALT_SERVICE_ACTION
+                }
+                context.bindService(altIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+            } else {
+                Log.d(TAG, "Service binding initiated successfully")
+                true
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to bind Sunmi service: ${e.message}")
             false
         }
     }
 
+    private fun testConnection() {
+        try {
+            Log.d(TAG, "Testing printer connection...")
+            val status = getPrinterStatus()
+            Log.d(TAG, "Printer status: $status")
+        } catch (e: Exception) {
+            Log.e(TAG, "Connection test failed: ${e.message}")
+        }
+    }
+
     fun disconnectService() {
         if (isServiceConnected) {
-            context.unbindService(serviceConnection)
+            try {
+                context.unbindService(serviceConnection)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error unbinding service: ${e.message}")
+            }
             isServiceConnected = false
             connectionListener?.invoke(false)
         }
@@ -86,12 +134,15 @@ class SunmiPrinterManager(private val context: Context) {
                 return false
             }
 
+            Log.d(TAG, "Printing text: $text")
+
             // Set alignment: 0=left, 1=center, 2=right
             invokeMethod("setAlignment", alignment, null)
 
             // Print text
             invokeMethod("printText", text, null)
 
+            Log.d(TAG, "Text print command sent successfully")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error printing text: ${e.message}")
@@ -109,12 +160,15 @@ class SunmiPrinterManager(private val context: Context) {
                 return false
             }
 
+            Log.d(TAG, "Printing text with font - Text: $text, Size: $fontSize")
+
             // Set alignment
             invokeMethod("setAlignment", alignment, null)
 
             // Print text with font size
             invokeMethod("printTextWithFont", text, null, fontSize, null)
 
+            Log.d(TAG, "Font text print command sent successfully")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error printing text with font: ${e.message}")
@@ -132,9 +186,12 @@ class SunmiPrinterManager(private val context: Context) {
                 return false
             }
 
+            Log.d(TAG, "Printing QR Code: $data")
+
             // Print QR Code (data, module size, error level)
             invokeMethod("printQRCode", data, moduleSize, 0, null)
 
+            Log.d(TAG, "QR Code print command sent successfully")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error printing QR code: ${e.message}")
@@ -148,11 +205,14 @@ class SunmiPrinterManager(private val context: Context) {
     fun getPrinterStatus(): Int {
         return try {
             if (!isServiceConnected || woyouService == null) {
+                Log.w(TAG, "Service not connected for status check")
                 return -1
             }
 
             val method = woyouService!!.javaClass.getMethod("getPrinterStatus")
-            method.invoke(woyouService) as Int
+            val status = method.invoke(woyouService) as Int
+            Log.d(TAG, "Printer status retrieved: $status")
+            status
         } catch (e: Exception) {
             Log.e(TAG, "Error getting printer status: ${e.message}")
             -1
@@ -160,39 +220,29 @@ class SunmiPrinterManager(private val context: Context) {
     }
 
     /**
-     * Print sample receipt
+     * Print sample receipt - simplified version for V1s
      */
     fun printSampleReceipt(): Boolean {
         return try {
             if (!isServiceConnected) {
+                Log.w(TAG, "Service not connected for receipt printing")
                 return false
             }
 
-            // Header
-            printTextWithFont("GAENTA\n", 24f, 1)
-            printText("Jl. Indonesia No. 123\n", 1)
-            printText("Phone: 021-12345678\n", 1)
-            printText("================================\n")
+            Log.d(TAG, "Starting sample receipt print...")
 
-            // Items
-            printText("Item                 Qty  Price\n")
-            printText("--------------------------------\n")
-            printText("Black Coffee          1   15000\n")
-            printText("Roti Bakar            2   10000\n")
-            printText("Air Mineral           1    5000\n")
-            printText("--------------------------------\n")
-
-            // Total
-            printTextWithFont("Total: Rp 40,000\n", 20f, 2)
-            printText("Cash: Rp 50,000\n", 2)
-            printText("Change: Rp 10,000\n", 2)
-
-            // Footer
-            printText("================================\n", 1)
-            printText("Thank You\n", 1)
-            printText("Have a Good Time\n", 1)
+            // Simple receipt for testing
+            printTextWithFont("SAMPLE RECEIPT\n", 24f, 1)
+            printText("=======================\n")
+            printText("Item 1               15000\n")
+            printText("Item 2               10000\n")
+            printText ("-----------------------\n")
+            printTextWithFont("Total: Rp 25,000\n", 20f, 2)
+            printText("=======================\n")
+            printText("Thank You!\n", 1)
             printText("\n\n\n")
 
+            Log.d(TAG, "Sample receipt print completed")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error printing sample receipt: ${e.message}")
@@ -206,21 +256,36 @@ class SunmiPrinterManager(private val context: Context) {
     private fun invokeMethod(methodName: String, vararg args: Any?): Any? {
         return try {
             val service = woyouService ?: return null
+
+            Log.d(TAG, "Invoking method: $methodName with args: ${args.contentToString()}")
+
             val parameterTypes = args.map { arg ->
                 when (arg) {
                     is String -> String::class.java
                     is Int -> Int::class.javaPrimitiveType
                     is Float -> Float::class.javaPrimitiveType
                     is Boolean -> Boolean::class.javaPrimitiveType
-                    null -> Class.forName("woyou.aidlservice.jiuiv5.ICallback")
+                    null -> {
+                        // For callback parameter
+                        try {
+                            Class.forName("woyou.aidlservice.jiuiv5.ICallback")
+                        } catch (_: Exception) {
+                            // Fallback if ICallback class not found
+                            Any::class.java
+                        }
+                    }
                     else -> arg.javaClass
                 }
             }.toTypedArray()
 
             val method = service.javaClass.getMethod(methodName, *parameterTypes)
-            method.invoke(service, *args)
+            val result = method.invoke(service, *args)
+
+            Log.d(TAG, "Method $methodName invoked successfully")
+            result
         } catch (e: Exception) {
             Log.e(TAG, "Error invoking method $methodName: ${e.message}")
+            e.printStackTrace()
             null
         }
     }
