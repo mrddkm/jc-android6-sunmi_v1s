@@ -36,14 +36,15 @@ class PrintService(context: Context) {
 
         try {
             // Header
-            printerManager.printTextWithFont("${receiptData.storeName}\n", 24f, 1)
+            // Fix: Remove the duplicate float argument. The function signature is (String, Float, Int)
+            printerManager.printTextWithFont("${receiptData.storeName}\n", "default", 24f, 1)
             printerManager.printText("${receiptData.storeAddress}\n", 1)
             printerManager.printText("${receiptData.storePhone}\n", 1)
-            printerManager.printText("================================\n")
+            printerManager.printText("================================\n", 1)
 
             // Items
-            printerManager.printText("Item                 Qty  Price\n")
-            printerManager.printText("--------------------------------\n")
+            printerManager.printText("Item                 Qty  Price\n", 1)
+            printerManager.printText("--------------------------------\n", 1)
 
             receiptData.items.forEach { item ->
                 val line = String.format(
@@ -52,14 +53,15 @@ class PrintService(context: Context) {
                     item.quantity,
                     item.price
                 )
-                printerManager.printText(line)
+                printerManager.printText(line, 0)
             }
 
-            printerManager.printText("--------------------------------\n")
+            printerManager.printText("--------------------------------\n", 1)
 
             // Total
             printerManager.printTextWithFont(
                 "Total: Rp ${receiptData.total.formatCurrency()}\n",
+                "default",
                 20f,
                 2
             )
@@ -71,7 +73,7 @@ class PrintService(context: Context) {
             printerManager.printText("Thank You\n", 1)
             printerManager.printText("Please Come Again\n", 1)
             printerManager.printText("${receiptData.dateTime}\n", 1)
-            printerManager.printText("\n\n\n")
+            printerManager.printText("\n\n\n", 1)
 
             return true
         } catch (_: Exception) {
@@ -82,13 +84,17 @@ class PrintService(context: Context) {
     fun printQRCode(qrData: String): Boolean {
         if (!isConnected()) return false
 
-        val success = printerManager.printQRCode(qrData, 8)
-        if (success) {
+        // Fix: Call printQRCode directly and use try-catch to handle errors
+        return try {
+            // Fix: Pass all required parameters (text, size, errorLevel)
+            printerManager.printQRCode(qrData, 8, 3) // 8 for size, 3 for errorLevel (H)
             printerManager.printText("\n=== QR CODE ===\n", 1)
             printerManager.printText("Generated: ${PrinterUtils.getCurrentTime()}\n", 1)
             printerManager.printText("================\n\n", 1)
+            true
+        } catch (_: Exception) {
+            false
         }
-        return success
     }
 
     fun printScanResult(scanResult: String): Boolean {

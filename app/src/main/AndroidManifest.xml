@@ -2,30 +2,42 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Permissions -->
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-    <!-- Sunmi printer service permissions -->
-    <uses-permission
-        android:name="android.permission.BIND_DEVICE_ADMIN"
-        tools:ignore="ProtectedPermissions" />
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32"
+    <!-- Sunmi Printer Permissions -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.BIND_PRINT_SERVICE"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Camera features (optional for compatibility) -->
-    <uses-feature
-        android:name="android.hardware.camera"
-        android:required="false" />
-    <uses-feature
-        android:name="android.hardware.camera.autofocus"
-        android:required="false" />
+    <!-- Camera permission for QR scanning -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- CRITICAL: Package visibility queries for Android 11+ (API 30+) -->
+    <queries>
+        <!-- Sunmi V1s Primary Service -->
+        <package android:name="woyou.aidlservice.jiuiv5" />
+
+        <!-- Alternative Sunmi Services -->
+        <package android:name="com.sunmi.printerservice" />
+        <package android:name="woyou.aidlservice.jiuiv5.main" />
+
+        <!-- Intent-based queries for Sunmi services -->
+        <intent>
+            <action android:name="woyou.aidlservice.jiuiv5.IWoyouService" />
+        </intent>
+        <intent>
+            <action android:name="woyou.aidlservice.jiuiv5" />
+        </intent>
+
+        <!-- QR Code scanning -->
+        <intent>
+            <action android:name="com.google.zxing.client.android.SCAN" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -58,17 +70,4 @@
             tools:replace="screenOrientation" />
 
     </application>
-    <!-- Query for Sunmi printer services -->
-    <queries>
-        <package android:name="woyou.aidlservice.jiuiv5" />
-        <package android:name="com.sunmi.printerservice" />
-
-        <intent>
-            <action android:name="woyou.aidlservice.jiuiv5.IWoyouService" />
-        </intent>
-        <intent>
-            <action android:name="com.sunmi.peripheral.printer.InnerPrinterService" />
-        </intent>
-    </queries>
-
 </manifest>

@@ -43,6 +43,7 @@ fun MainScreen(
     onScanQR: () -> Unit,
     onPrintQR: () -> Unit,
     onCheckStatus: () -> Unit,
+    onCheckServices: () -> Unit,
     lastScanResult: String,
     showQRDialog: Boolean,
     onShowQRDialog: (Boolean) -> Unit,
@@ -92,6 +93,7 @@ fun MainScreen(
             onPrintQR = onPrintQR,
             onScanQR = onScanQR,
             onCheckStatus = onCheckStatus,
+            onCheckServices = onCheckServices,
             onRequestCameraPermission = { cameraPermissionLauncher.launch(Manifest.permission.CAMERA) }
         )
 
@@ -153,6 +155,7 @@ private fun ActionButtonsSection(
     onPrintQR: () -> Unit,
     onScanQR: () -> Unit,
     onCheckStatus: () -> Unit,
+    onCheckServices: () -> Unit,
     onRequestCameraPermission: () -> Unit
 ) {
     // Print Receipt Button
@@ -232,6 +235,24 @@ private fun ActionButtonsSection(
             fontWeight = FontWeight.Medium
         )
     }
+
+    // Check Sunmi Services Button
+    Button(
+        onClick = onCheckServices,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Text(
+            text = "🛠️ Check Services",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium
+        )
+    }
 }
 
 @Composable
@@ -293,6 +314,10 @@ private fun InfoSection() {
             )
             Text(
                 text = "• Check Status - Check printer status real-time",
+                fontSize = 12.sp
+            )
+            Text(
+                text = "• Check Services - Check Sunmi service availability",
                 fontSize = 12.sp
             )
         }
