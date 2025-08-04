@@ -1,29 +1,30 @@
 package com.arkhe.sunmiv1s
 
+// import java.lang.reflect.InvocationHandler // No longer needed directly for lambda
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Build
 import android.os.IBinder
+import android.os.RemoteException
 import android.util.Log
+import woyou.aidlservice.jiuiv5.ICallback
 import woyou.aidlservice.jiuiv5.IWoyouService
-import java.lang.reflect.Proxy
+import java.util.LinkedList
+import java.util.Queue
 
 /**
  * Enhanced Sunmi V1s Printer Manager with Multiple Connection Strategies
- * Handles Android 11+ package visibility and multiple fallback approaches
+ * Handles Android 11+ package visibility and multiple fallback approaches.
+ * Uses direct AIDL interface calls instead of reflection.
  */
 class SunmiPrinterManager(private val context: Context) {
 
     companion object {
         private const val TAG = "SunmiV1sPrinterManager"
-
-        // Primary service configuration for V1s
         private const val PRIMARY_SERVICE_PACKAGE = "woyou.aidlservice.jiuiv5"
         private const val PRIMARY_SERVICE_ACTION = "woyou.aidlservice.jiuiv5.IWoyouService"
-
-        // Alternative service configurations
         private val ALTERNATIVE_SERVICES = listOf(
             ServiceConfig("com.sunmi.printerservice", "com.sunmi.printerservice.IWoyouService"),
             ServiceConfig(
@@ -34,441 +35,473 @@ class SunmiPrinterManager(private val context: Context) {
         )
     }
 
-    data class ServiceConfig(
-        val packageName: String,
-        val action: String
-    )
+    data class ServiceConfig(val packageName: String, val action: String)
 
-    // This will hold the actual AIDL proxy instance
     private var iWoyouService: IWoyouService? = null
-
-    // This will be used by invokeMethod, can be kept as Any if you prefer late binding style
-    private var woyouService: Any? = null
-    private var isServiceConnected = false
+    private var isServiceBound = false
     private var connectionListener: ((Boolean) -> Unit)? = null
     private var currentServiceConfig: ServiceConfig? = null
     private var connectionAttempts = 0
-    private val maxConnectionAttempts = ALTERNATIVE_SERVICES.size + 1
+    private val maxConnectionAttempts = 1 + ALTERNATIVE_SERVICES.size
 
+    private val pendingCommands: Queue<Pair<String, () -> Unit>> = LinkedList()
+    private var isConnecting = false
 
+    // ServiceConnection remains largely the same as it implements multiple methods.
+    // Kotlin doesn't offer a direct lambda conversion for multi-method interfaces
+    // in the same way it does for SAM interfaces.
     private val serviceConnection = object : ServiceConnection {
-
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            Log.d(TAG, "🔌 Service connected: ${name?.className}")
-            // Critical: Get the IWoyouService interface
-            val serviceInterface = IWoyouService.Stub.asInterface(service)
-
-            if (serviceInterface != null) {
-                iWoyouService = serviceInterface // Store the typed interface
-                woyouService = serviceInterface  // Store for reflection in invokeMethod
-                isServiceConnected = true
-                Log.i(TAG, "✅ IWoyouService interface obtained successfully.")
-                connectionListener?.invoke(true)
-            } else {
+            Log.d(TAG, "🔌 Service connected: ${name?.packageName}/${name?.className}")
+            isConnecting = false
+            try {
+                iWoyouService = IWoyouService.Stub.asInterface(service)
+                if (iWoyouService != null) {
+                    isServiceBound = true
+                    Log.i(
+                        TAG,
+                        "✅ IWoyouService interface obtained successfully for ${name?.packageName}."
+                    )
+                    processPendingCommands()
+                    connectionListener?.invoke(true)
+                } else {
+                    Log.e(
+                        TAG,
+                        "❌ IWoyouService is null after asInterface for ${name?.packageName}. This might indicate an AIDL stub issue or service problem."
+                    )
+                    handleFailedConnectionAttempt()
+                }
+            } catch (e: Exception) {
                 Log.e(
                     TAG,
-                    "❌ IWoyouService is null after asInterface. This should not happen if AIDL is correct."
+                    "❌ Exception during onServiceConnected for ${name?.packageName}: ${e.message}",
+                    e
                 )
-                iWoyouService = null
-                woyouService = null
-                isServiceConnected = false // Ensure this is false
-                connectionListener?.invoke(false)
-                // Optionally, trigger fallback here if primary connection fails at this stage
-                // connectServiceWithFallback()
+                handleFailedConnectionAttempt()
             }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            Log.w(TAG, "🔌 Service disconnected: ${name?.className}")
-            isServiceConnected = false
-            woyouService = null
+            Log.w(TAG, "🔌 Service disconnected: ${name?.packageName}/${name?.className}")
+            isConnecting = false
+            isServiceBound = false
             iWoyouService = null
             connectionListener?.invoke(false)
+        }
+
+        override fun onBindingDied(name: ComponentName?) {
+            Log.e(
+                TAG,
+                "🆘 Binding DIED for service: ${name?.packageName}/${name?.className}. Attempting to reconnect."
+            )
+            isConnecting = false
+            isServiceBound = false
+            iWoyouService = null
+            connectionListener?.invoke(false)
+            connectService()
+        }
+
+        override fun onNullBinding(name: ComponentName?) {
+            Log.e(
+                TAG,
+                "❌ Null binding received for service: ${name?.packageName}/${name?.className}. Service might not be available or configured correctly."
+            )
+            isConnecting = false
+            handleFailedConnectionAttempt()
+        }
+    }
+
+    private fun handleFailedConnectionAttempt() {
+        isServiceBound = false
+        iWoyouService = null
+        if (connectionAttempts < maxConnectionAttempts) {
+            Log.i(
+                TAG,
+                "Retrying connection, attempt #${connectionAttempts + 1} of $maxConnectionAttempts"
+            )
+            connectServiceWithFallback()
+        } else {
+            Log.e(
+                TAG,
+                "❌ Max connection attempts ($maxConnectionAttempts) reached. Failed to connect to any Sunmi service."
+            )
+            isConnecting = false
+            connectionListener?.invoke(false)
+            clearPendingCommandsWithError("Max connection attempts reached.")
+        }
+    }
+
+    private fun processPendingCommands() {
+        synchronized(pendingCommands) {
+            if (pendingCommands.isNotEmpty()) {
+                Log.d(TAG, "Processing ${pendingCommands.size} pending command(s).")
+                while (pendingCommands.isNotEmpty()) {
+                    val commandPair = pendingCommands.poll()
+                    commandPair?.let {
+                        Log.d(TAG, "Executing queued command: ${it.first}")
+                        try {
+                            it.second.invoke()
+                        } catch (e: Exception) {
+                            Log.e(
+                                TAG,
+                                "Error executing queued command '${it.first}': ${e.message}",
+                                e
+                            )
+                        }
+                    }
+                }
+            } else {
+                Log.d(TAG, "No pending commands to process.")
+            }
+        }
+    }
+
+    private fun addCommandToQueue(commandDescription: String, command: () -> Unit) {
+        synchronized(pendingCommands) {
+            Log.d(TAG, "Queuing command: $commandDescription")
+            pendingCommands.add(Pair(commandDescription, command))
+        }
+    }
+
+    private fun clearPendingCommandsWithError(reason: String) {
+        synchronized(pendingCommands) {
+            if (pendingCommands.isNotEmpty()) {
+                Log.w(TAG, "Clearing ${pendingCommands.size} pending command(s) due to: $reason")
+                pendingCommands.clear()
+            }
         }
     }
 
     fun setConnectionListener(listener: (Boolean) -> Unit) {
-        connectionListener = listener
+        this.connectionListener = listener
     }
 
     fun connectService() {
-        if (isServiceConnected && iWoyouService != null) { // Check iWoyouService too
-            Log.d(TAG, "Service already connected.")
+        if (isConnected()) {
+            Log.d(TAG, "Service already connected and IWoyouService is available.")
             connectionListener?.invoke(true)
+            processPendingCommands()
             return
         }
-        isServiceConnected = false // Reset status before new attempt
+        if (isConnecting) {
+            Log.d(TAG, "Connection attempt already in progress.")
+            return
+        }
+        isConnecting = true
+        isServiceBound = false
         iWoyouService = null
-        woyouService = null
         connectionAttempts = 0
+        Log.i(TAG, "Attempting to connect to Sunmi printer service...")
         connectServiceWithFallback()
     }
 
     private fun connectServiceWithFallback() {
         if (connectionAttempts >= maxConnectionAttempts) {
-            Log.e(TAG, "❌ Max connection attempts reached. Failed to connect to any Sunmi service.")
+            Log.e(
+                TAG,
+                "❌ Max connection attempts reached. Failed to connect after $maxConnectionAttempts attempts."
+            )
+            isConnecting = false
             connectionListener?.invoke(false)
+            clearPendingCommandsWithError("Max connection attempts reached during fallback.")
             return
         }
 
         val servicesToTry = listOf(
-            ServiceConfig(PRIMARY_SERVICE_PACKAGE, PRIMARY_SERVICE_ACTION)
+            ServiceConfig(
+                PRIMARY_SERVICE_PACKAGE,
+                PRIMARY_SERVICE_ACTION
+            )
         ) + ALTERNATIVE_SERVICES
-
         currentServiceConfig = servicesToTry.getOrNull(connectionAttempts)
         connectionAttempts++
 
-
         if (currentServiceConfig == null) {
-            Log.e(TAG, "❌ No more service configurations to try.")
+            Log.e(
+                TAG,
+                "❌ No more service configurations to try. (Attempt $connectionAttempts/$maxConnectionAttempts)"
+            )
+            isConnecting = false
             connectionListener?.invoke(false)
+            clearPendingCommandsWithError("No more service configurations.")
             return
         }
 
-        Log.d(
+        Log.i(
             TAG,
-            "Attempt #${connectionAttempts}: Trying to connect to service ${currentServiceConfig?.packageName}..."
+            "Attempt #${connectionAttempts}/${maxConnectionAttempts}: Trying to bind to service ${currentServiceConfig!!.packageName} (Action: ${currentServiceConfig!!.action})"
         )
-
-        val intent = Intent()
-        intent.setPackage(currentServiceConfig?.packageName)
-        intent.action = currentServiceConfig?.action
+        val intent = Intent().apply {
+            setPackage(currentServiceConfig!!.packageName)
+            action = currentServiceConfig!!.action
+        }
 
         try {
             val isBound = context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             if (isBound) {
-                Log.i(TAG, "Binding service to ${currentServiceConfig?.packageName}...")
+                Log.d(TAG, "Binding initiated for ${currentServiceConfig!!.packageName}...")
             } else {
                 Log.w(
                     TAG,
-                    "bindService returned false for ${currentServiceConfig?.packageName}. Retrying with next..."
+                    "bindService returned false immediately for ${currentServiceConfig!!.packageName}. Trying next..."
                 )
-                connectServiceWithFallback()
+                handleFailedConnectionAttempt()
             }
         } catch (e: SecurityException) {
             Log.e(
                 TAG,
-                "SecurityException during bindService for ${currentServiceConfig?.packageName}: ${e.message}. " +
-                        "Ensure <queries> tag for package visibility is in AndroidManifest.xml for Android 11+.",
+                "SecurityException for ${currentServiceConfig!!.packageName}: ${e.message}. Check <queries> tag.",
                 e
             )
-            connectServiceWithFallback() // Try next
+            handleFailedConnectionAttempt()
         } catch (e: Exception) {
             Log.e(
                 TAG,
-                "Exception during bindService for ${currentServiceConfig?.packageName}: ${e.message}. Retrying with next...",
+                "Exception during bindService for ${currentServiceConfig!!.packageName}: ${e.message}",
                 e
             )
-            connectServiceWithFallback()
+            handleFailedConnectionAttempt()
         }
     }
 
     fun disconnectService() {
-        if (isServiceConnected) {
+        if (isServiceBound) {
             try {
                 context.unbindService(serviceConnection)
+                Log.d(TAG, "Printer service unbound by manager.")
             } catch (e: IllegalArgumentException) {
                 Log.w(TAG, "Service was not registered or already unbound: ${e.message}")
             }
-            isServiceConnected = false
-            woyouService = null
-            iWoyouService = null
-            Log.d(TAG, "Printer service disconnected by manager.")
         }
+        isServiceBound = false
+        iWoyouService = null
+        isConnecting = false
     }
 
     fun isConnected(): Boolean {
-        // More robust check: also ensure the AIDL interface object is not null
-        return isServiceConnected && iWoyouService != null && woyouService != null
+        return isServiceBound && iWoyouService != null
     }
 
-    //
-    // PRINTER METHODS
-    //
+    private fun executePrintCommand(
+        commandDescription: String,
+        // Optional: Add a parameter here for a Kotlin lambda to be called by ICallback.Stub
+        // e.g., onResult: (Boolean, String?) -> Unit,
+        commandAction: (service: IWoyouService, callback: ICallback) -> Unit
+    ) {
+        if (!isConnected()) {
+            Log.w(TAG, "$commandDescription: Service not connected. Queuing command.")
+            addCommandToQueue(commandDescription) {
+                executePrintCommand(
+                    commandDescription,
+                    commandAction
+                )
+            }
+            if (!isConnecting && !isServiceBound) connectService()
+            return
+        }
+
+        val service = iWoyouService
+        if (service == null) {
+            Log.e(TAG, "$commandDescription: IWoyouService is null. Queuing.")
+            addCommandToQueue(commandDescription) {
+                executePrintCommand(
+                    commandDescription,
+                    commandAction
+                )
+            }
+            if (!isConnecting) connectService()
+            return
+        }
+
+        // Set the description for the current command on the shared callback instance
+        // This is a simple way; more robust would be per-command callbacks or request IDs.
+        printerCommandCallback.setCommandDescription(commandDescription) // Hacky way for dynamic dispatch if needed, or better, make printerCommandCallback a class
+        // Better: make printerCommandCallback an interface and implement it
+        // Or, directly pass commandDescription to the ICallback.Stub if it's designed to accept it.
+        // For now, if printerCommandCallback is the object as above, this cast won't work directly.
+        // Let's modify printerCommandCallback for this.
+
+        // Simpler approach for now:
+        // If your ICallback.Stub is simple and just logs, you might not even need to set a description per call,
+        // as the log in executePrintCommand already states what's being executed.
+        // The callback logs would then be generic.
+
+        // If you need specific actions per callback, you'd pass lambdas to executePrintCommand
+        // and your ICallback.Stub would invoke those.
+
+        try {
+            Log.d(TAG, "Executing: $commandDescription")
+            commandAction(service, printerCommandCallback) // Pass the concrete Stub instance
+        } catch (e: RemoteException) {
+            Log.e(TAG, "RemoteException during $commandDescription: ${e.message}", e)
+            // Consider the state of the service. A RemoteException (like DeadObjectException)
+            // often means the service connection is lost.
+            disconnectService() // Good practice
+            addCommandToQueue(commandDescription) {
+                executePrintCommand(
+                    commandDescription,
+                    commandAction
+                )
+            }
+            connectService() // Attempt to reconnect
+        } catch (e: Exception) {
+            Log.e(TAG, "General Exception during $commandDescription: ${e.message}", e)
+            // Depending on the exception, you might not need to disconnect/reconnect here.
+        }
+    }
 
     fun printText(text: String, align: Int) {
-        if (!isConnected()) {
-            Log.w(TAG, "Not connected, cannot print text.")
-            return
+        val commandDesc = "printText (align: $align, text: '$text')"
+        executePrintCommand(commandDesc) { service, mainCallback ->
+            // Pass the same mainCallback to all service methods requiring it
+            service.setAlignment(align, mainCallback) // Use the mainCallback
+            Log.d(TAG, "Alignment command sent for $commandDesc")
+            service.printText(text, mainCallback)     // Use the mainCallback
+            Log.d(TAG, "printText command sent for $commandDesc")
         }
-        // Assuming printText in AIDL also takes ICallback based on setAlignment
-        // If not, remove the callback argument
-        val callback = createCallback("printText")
-        if (callback == null) {
-            Log.e(TAG, "Failed to create callback for printText. Aborting.")
-            return
-        }
-        // First set alignment, then print text
-        // Note: AIDL calls are often asynchronous. Ensure alignment is set before printing.
-        // This might require a more complex handling if setAlignment itself is async
-        // and doesn't block. For now, assuming it's quick enough or synchronous.
-        setAlignment(align) // This will now use the corrected call with a callback
-        invokeMethod("printText", text, callback) // Assuming printText needs a callback
     }
 
-    /**
-     * Prints text with a specified font size and typeface.
-     * Assumes alignment is handled separately if needed.
-     *
-     * @param text The text to print.
-     * @param typeface The name of the typeface/font to use (e.g., "default", "fangsong").
-     *                 This depends on the printer's supported fonts.
-     * @param fontSize The font size.
-     * @param align The alignment for the text (0-left, 1-center, 2-right).
-     *              This will call setAlignment before printing.
-     */
     fun printTextWithFont(text: String, typeface: String, fontSize: Float, align: Int) {
-        if (!isConnected()) {
-            Log.w(TAG, "Not connected, cannot print text with font.")
-            return
+        val commandDesc =
+            "printTextWithFont (align: $align, font: $typeface, size: $fontSize, text: '$text')"
+        executePrintCommand(commandDesc) { service, mainCallback ->
+            service.setAlignment(align, mainCallback)
+            Log.d(TAG, "Alignment command sent for $commandDesc")
+            service.printTextWithFont(text, typeface, fontSize, mainCallback)
+            Log.d(TAG, "printTextWithFont command sent for $commandDesc")
         }
-
-        // 1. Create the callback
-        val callback = createCallback("printTextWithFont")
-        if (callback == null) {
-            Log.e(TAG, "Failed to create callback for printTextWithFont. Aborting.")
-            return
-        }
-
-        // 2. Set alignment (if your printing logic requires setting alignment before each print)
-        // This call to setAlignment itself must be correct (i.e., provide its own callback)
-        setAlignment(align) // Assuming setAlignment is already fixed to accept its callback
-
-        // 3. Invoke printTextWithFont with ALL FOUR required arguments
-        Log.d(TAG, "Attempting to invoke printTextWithFont with: text='$text', typeface='$typeface', fontSize=$fontSize, callback=$callback")
-        invokeMethod(
-            "printTextWithFont", // Method name
-            text,                // Argument 1: String text
-            typeface,            // Argument 2: String typeface
-            fontSize,            // Argument 3: float font size
-            callback             // Argument 4: ICallback callback
-        )
     }
 
-    /**
-     * Sets the alignment for subsequent printing operations.
-     * AIDL definition: void setAlignment(int alignment, in ICallback callback);
-     */
     fun setAlignment(align: Int) {
-        if (!isConnected()) {
-            Log.w(TAG, "Not connected, cannot set alignment.")
-            return
+        val commandDesc = "setAlignment (align: $align)"
+        executePrintCommand(commandDesc) { service, mainCallback ->
+            service.setAlignment(align, mainCallback)
+            Log.d(TAG, "setAlignment command sent for $commandDesc")
         }
-        val callback = createCallback("setAlignment")
-        if (callback == null) {
-            Log.e(TAG, "Failed to create callback for setAlignment. Aborting.")
-            return
-        }
-        // Pass 'align' and the created 'callback' object to invokeMethod
-        invokeMethod("setAlignment", align, callback)
     }
 
-    @Suppress("UNUSED")
     fun setFontSize(fontSize: Float) {
-        if (!isConnected()) return
-        val callback = createCallback("setFontSize") // Assuming it also needs a callback
-        if (callback == null) { /* ... handle error ... */ return
+        val commandDesc = "setFontSize (size: $fontSize)"
+        executePrintCommand(commandDesc) { service, mainCallback ->
+            service.setFontSize(fontSize, mainCallback)
+            Log.d(TAG, "setFontSize command sent for $commandDesc")
         }
-        invokeMethod("setFontSize", fontSize, callback)
     }
 
-    @Suppress("UNUSED")
-    fun lineWrap(count: Int) { // Assuming lineWrap might take a count, and a callback
-        if (!isConnected()) return
-        val callback = createCallback("lineWrap")
-        if (callback == null) { /* ... handle error ... */ return
+    fun lineWrap(count: Int) {
+        val commandDesc = "lineWrap (count: $count)"
+        executePrintCommand(commandDesc) { service, mainCallback ->
+            service.lineWrap(count, mainCallback)
+            Log.d(TAG, "lineWrap command sent for $commandDesc")
         }
-        invokeMethod("lineWrap", count, callback) // Check AIDL for exact signature
     }
 
     fun printQRCode(text: String, size: Int, errorLevel: Int) {
-        if (!isConnected()) return
-        val callback = createCallback("printQRCode")
-        if (callback == null) { /* ... handle error ... */ return
+        val commandDesc = "printQRCode (size: $size, error: $errorLevel, text: '$text')"
+        executePrintCommand(commandDesc) { service, mainCallback ->
+            service.printQRCode(text, size, errorLevel, mainCallback)
+            Log.d(TAG, "printQRCode command sent for $commandDesc")
         }
-        // Assuming the primary version of printQRCode also takes a callback
-        invokeMethod("printQRCode", text, size, errorLevel, callback)
-        // Note: The reflection for printQRCode trying different signatures in the original code
-        // might need adjustment if all versions actually require a callback.
-        // For simplicity, this example assumes the 4-arg version is primary.
     }
 
-    fun getPrinterStatus(): Int {
+
+    fun getPrinterStatus(statusResultCallback: (status: Int) -> Unit) {
+        val commandDescription = "getPrinterStatus"
         if (!isConnected()) {
-            Log.w(TAG, "Not connected, cannot get printer status.")
-            return -1
+            Log.w(TAG, "$commandDescription: Service not connected. Queuing.")
+            addCommandToQueue(commandDescription) { getPrinterStatus(statusResultCallback) }
+            if (!isConnecting && !isServiceBound) connectService()
+            return
         }
-
-        val result = invokeMethod("getPrinterStatus")
-
-        return when (result) {
-            is Int -> {
-                Log.d(TAG, "Printer status: $result")
-                result
-            }
-            null -> {
-                Log.e(TAG, "invokeMethod for getPrinterStatus returned null.")
-                -1
-            }
-            else -> {
-                Log.e(TAG, "invokeMethod for getPrinterStatus returned unexpected type: ${result.javaClass.name}")
-                -1
-            }
-        }
-    }
-
-    /**
-     * Helper method to invoke methods using reflection.
-     * It now correctly handles parameters including ICallback proxies.
-     */
-    private fun invokeMethod(methodName: String, vararg args: Any?): Any? {
-        val service = woyouService // Use the stored woyouService
+        val service = iWoyouService
         if (service == null) {
-            Log.e(TAG, "Service is null, cannot invoke method $methodName.")
-            return null
+            Log.e(TAG, "$commandDescription: IWoyouService is null. Queuing.")
+            addCommandToQueue(commandDescription) { getPrinterStatus(statusResultCallback) }
+            if (!isConnecting) connectService()
+            return
         }
 
         try {
-            Log.d(
+            Log.d(TAG, "Executing: $commandDescription")
+            val status = service.printerStatus
+            Log.d(TAG, "Printer status reported: $status")
+            statusResultCallback(status)
+        } catch (e: RemoteException) {
+            Log.e(TAG, "RemoteException during $commandDescription: ${e.message}", e)
+            statusResultCallback(-1001)
+            disconnectService()
+            addCommandToQueue(commandDescription) { getPrinterStatus(statusResultCallback) }
+            connectService()
+        } catch (e: Exception) {
+            Log.e(TAG, "General Exception during $commandDescription: ${e.message}", e)
+            statusResultCallback(-1002)
+        }
+    }
+
+    private val printerCommandCallback = object : ICallback.Stub() {
+        // We'll need a way to correlate responses to commands if using a single callback instance
+        // For simplicity now, just logging. You might need a more sophisticated system
+        // to route callbacks to the original caller (e.g., using a map of request IDs).
+        // Or, for each command, pass a specific Kotlin lambda that this stub calls.
+
+        private var currentCommandDescription: String = "N/A"
+
+        fun setCommandDescription(description: String) {
+            this.currentCommandDescription = description
+        }
+
+        override fun onRunResult(isSuccess: Boolean) {
+            Log.i(
                 TAG,
-                "Invoking method: $methodName with args: ${args.joinToString { it?.javaClass?.simpleName ?: "null" }} (count: ${args.size})"
+                "ICallback.onRunResult for [$currentCommandDescription]: Success - $isSuccess"
             )
+            // Here you would typically invoke a Kotlin lambda passed with the command
+        }
 
-            val parameterTypes = args.map { arg ->
-                when {
-                    arg is String -> String::class.java
-                    arg is Int -> Int::class.javaPrimitiveType
-                    arg is Float -> Float::class.javaPrimitiveType
-                    arg is Boolean -> Boolean::class.javaPrimitiveType
-                    // Check if the argument is a Proxy and implements ICallback
-                    arg != null && Proxy.isProxyClass(arg.javaClass) && arg.javaClass.interfaces.any { it.name == "woyou.aidlservice.jiuiv5.ICallback" } -> {
-                        Class.forName("woyou.aidlservice.jiuiv5.ICallback")
-                    }
-
-                    arg == null -> Any::class.java // Or handle nulls more specifically if needed
-                    else -> arg.javaClass
-                }
-            }.toTypedArray()
-
-            Log.d(
+        override fun onReturnString(result: String?) {
+            Log.i(
                 TAG,
-                "Parameter types for $methodName: ${parameterTypes.joinToString { it?.name ?: "" }}"
+                "ICallback.onReturnString for [$currentCommandDescription]: Result - '${result ?: ""}'"
             )
+        }
 
-            val method = service.javaClass.getMethod(methodName, *parameterTypes)
-            val result = method.invoke(service, *args)
-
-            Log.d(TAG, "✅ Method $methodName invoked successfully. Result: $result")
-            return result
-        } catch (e: NoSuchMethodException) {
+        override fun onRaiseException(code: Int, msg: String?) {
             Log.e(
                 TAG,
-                "❌ NoSuchMethodException for $methodName. Check method signature and arguments in AIDL vs. invocation.",
-                e
+                "ICallback.onRaiseException for [$currentCommandDescription]: Code - $code, Message - '${msg ?: "Unknown error"}'"
             )
-            // Log expected vs actual for easier debugging
-            val argClasses = args.map { it?.javaClass?.name ?: "null" }.toTypedArray()
-            Log.e(TAG, "Arguments provided: ${argClasses.contentToString()}")
-            logAvailableMethods(service, methodName)
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error invoking method $methodName: ${e.message}", e)
         }
-        return null
-    }
 
-    /**
-     * Helper to log available methods of the service object for debugging NoSuchMethodException.
-     */
-    private fun logAvailableMethods(service: Any, methodNameFilter: String? = null) {
-        Log.d(TAG, "Available methods in service ${service.javaClass.name}:")
-        service.javaClass.methods.filter {
-            methodNameFilter == null || it.name.contains(methodNameFilter, ignoreCase = true)
-        }.sortedBy { it.name }.forEach { method ->
-            val params = method.parameterTypes.joinToString(", ") { it.simpleName }
-            Log.d(TAG, "  -> ${method.name}($params)")
-        }
-    }
-
-
-    /**
-     * Helper method to create a dynamic proxy for the ICallback interface.
-     */
-    private fun createCallback(methodName: String): Any? {
-        return try {
-            val callbackClass = Class.forName("woyou.aidlservice.jiuiv5.ICallback")
-
-            // Using InvocationHandler for clarity
-            Proxy.newProxyInstance(
-                callbackClass.classLoader,
-                arrayOf(callbackClass)
-            ) { proxy, method, args ->
-                Log.d(
-                    TAG,
-                    "ICallback: ${method.name} invoked for original call: $methodName (Args: ${args?.contentToString()})"
-                )
-                when (method.name) {
-                    "onRunResult" -> {
-                        val success = args?.getOrNull(0) as? Boolean
-                        Log.d(TAG, "ICallback onRunResult for $methodName: Success - $success")
-                        // TODO: Propagate this result if needed
-                    }
-
-                    "onReturnString" -> {
-                        val resultStr = args?.getOrNull(0) as? String
-                        Log.d(TAG, "ICallback onReturnString for $methodName: $resultStr")
-                        // TODO: Propagate this result if needed
-                    }
-
-                    "onRaiseException" -> {
-                        val code = args?.getOrNull(0) as? Int
-                        val msg = args?.getOrNull(1) as? String
-                        Log.e(
-                            TAG,
-                            "ICallback onRaiseException for $methodName: code=$code, msg=$msg"
-                        )
-                        // TODO: Propagate this error if needed
-                    }
-
-                    "onPrinterStatus" -> { // Assuming this callback method exists in ICallback.aidl
-                        val status = args?.getOrNull(0) as? Int
-                        Log.d(TAG, "ICallback onPrinterStatus for $methodName: $status")
-                        // TODO: Propagate this status if needed
-                    }
-                    // Handle other ICallback methods as defined in your ICallback.aidl
-                }
-                // Most AIDL callback methods are 'oneway' and return 'void'.
-                // If your callback methods return something, adjust this return.
-                null
-            }
-        } catch (e: ClassNotFoundException) {
-            Log.e(
+        override fun onProgressUpdate(progress: Int) {
+            Log.d(
                 TAG,
-                "❌ ICallback class (woyou.aidlservice.jiuiv5.ICallback) not found: ${e.message}",
-                e
+                "ICallback.onProgressUpdate for [$currentCommandDescription]: Progress - $progress"
             )
-            null
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to create ICallback proxy for $methodName: ${e.message}", e)
-            null
+        }
+
+        override fun isCallbackReady(): Boolean {
+            val isReady = iWoyouService != null && isServiceBound
+            Log.d(
+                TAG,
+                "ICallback.isCallbackReady for [$currentCommandDescription], returning: $isReady"
+            )
+            // Generally, if the service is bound and the interface is not null, it's ready.
+            return isReady
         }
     }
 
-    /**
-     * Get connection info for debugging
-     */
-    @Suppress("UNUSED")
     fun getConnectionInfo(): String {
         return buildString {
             appendLine("=== PRINTER CONNECTION INFO ===")
-            appendLine("Is Service Connected (flag): $isServiceConnected")
-            appendLine("IWoyouService (typed AIDL obj): ${if (iWoyouService != null) "Available" else "Null"}")
-            appendLine("WoyouService (reflection target obj): ${if (woyouService != null) "Available" else "Null"}")
-            appendLine("Current Service Config: ${currentServiceConfig?.packageName ?: "N/A"}")
-            appendLine("Connection Attempts: $connectionAttempts/$maxConnectionAttempts")
-            appendLine("Android Version: ${Build.VERSION.SDK_INT}")
-            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("Is Service Bound (isServiceBound flag): $isServiceBound")
+            appendLine("IWoyouService (typed AIDL object): ${if (iWoyouService != null) "Available" else "Null"}")
+            appendLine("Is Connecting (isConnecting flag): $isConnecting")
+            appendLine("Current Service Config Tried: ${currentServiceConfig?.packageName ?: "N/A"}")
+            appendLine("Connection Attempts Made: $connectionAttempts / $maxConnectionAttempts")
+            appendLine("Pending Commands in Queue: ${pendingCommands.size}")
+            appendLine("Android OS Version: API ${Build.VERSION.SDK_INT} (${Build.VERSION.RELEASE})")
+            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL} (Product: ${Build.PRODUCT})")
             appendLine("===============================")
         }
     }
 }
-

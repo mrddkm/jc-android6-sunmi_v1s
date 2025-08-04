@@ -24,6 +24,7 @@
         <!-- Alternative Sunmi Services -->
         <package android:name="com.sunmi.printerservice" />
         <package android:name="woyou.aidlservice.jiuiv5.main" />
+        <package android:name="com.sunmi.sunmiservice" />
 
         <!-- Intent-based queries for Sunmi services -->
         <intent>

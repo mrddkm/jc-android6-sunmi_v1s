@@ -7,7 +7,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,15 +38,16 @@ import com.arkhe.sunmiv1s.ui.component.QRCodeDialog
 @Composable
 fun MainScreen(
     isServiceConnected: Boolean,
+    connectionStatusMessage: String, // Added this parameter
     onPrintReceipt: () -> Unit,
     onScanQR: () -> Unit,
-    onPrintQR: () -> Unit,
+    onPrintQR: () -> Unit, // This is for showing the custom QR dialog
     onCheckStatus: () -> Unit,
     onCheckServices: () -> Unit,
     lastScanResult: String,
     showQRDialog: Boolean,
     onShowQRDialog: (Boolean) -> Unit,
-    onPrintCustomQR: (String) -> Unit
+    onPrintCustomQR: (String) -> Unit // This is for printing the custom QR data
 ) {
     val context = LocalContext.current
     var hasCameraPermission by remember {
@@ -68,7 +68,7 @@ fun MainScreen(
         } else {
             Toast.makeText(
                 context,
-                "Camera permission required for QR scanning",
+                "Camera permission is required to scan QR codes.",
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -82,15 +82,18 @@ fun MainScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Header Section
-        HeaderSection(isServiceConnected = isServiceConnected)
+        // Header Section - Pass the new message
+        HeaderSection(
+            isServiceConnected = isServiceConnected,
+            statusMessage = connectionStatusMessage // Pass the detailed status message
+        )
 
         // Action Buttons Section
         ActionButtonsSection(
             isServiceConnected = isServiceConnected,
             hasCameraPermission = hasCameraPermission,
             onPrintReceipt = onPrintReceipt,
-            onPrintQR = onPrintQR,
+            onPrintQR = onPrintQR, // This should trigger the dialog: onShowQRDialog(true)
             onScanQR = onScanQR,
             onCheckStatus = onCheckStatus,
             onCheckServices = onCheckServices,
@@ -106,42 +109,53 @@ fun MainScreen(
         InfoSection()
     }
 
-    // QR Code Dialog
-    QRCodeDialog(
-        showDialog = showQRDialog,
-        onDismiss = { onShowQRDialog(false) },
-        onPrintQR = { qrData ->
-            onPrintCustomQR(qrData)
-            onShowQRDialog(false)
-        }
-    )
+    // QR Code Dialog for custom QR input
+    if (showQRDialog) { // Ensure dialog is shown based on the state
+        QRCodeDialog(
+            showDialog = true, // Controlled by state
+            onDismiss = { onShowQRDialog(false) },
+            onPrintQR = { qrData ->
+                onPrintCustomQR(qrData) // Call the specific lambda for printing custom QR
+                onShowQRDialog(false) // Dismiss dialog after queuing print
+            }
+        )
+    }
 }
 
 @Composable
-private fun HeaderSection(isServiceConnected: Boolean) {
+private fun HeaderSection(
+    isServiceConnected: Boolean,
+    statusMessage: String // New parameter for detailed status
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "Sunmi V1s App",
-                fontSize = 20.sp,
+                text = "Sunmi V1s Demo", // App Title
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            // Display the detailed connection status message
             Text(
-                text = if (isServiceConnected) "Printer: Connected ✓" else "Printer: Disconnected ✗",
-                fontSize = 14.sp,
-                color = if (isServiceConnected)
-                    MaterialTheme.colorScheme.primary
-                else
-                    MaterialTheme.colorScheme.error
+                text = statusMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                color = if (isServiceConnected && statusMessage.contains("✓")) {
+                    MaterialTheme.colorScheme.primary // Greenish for success
+                } else if (statusMessage.contains("✗") || statusMessage.contains("failed")) {
+                    MaterialTheme.colorScheme.error // Reddish for error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant // Default for intermediate states
+                }
             )
         }
     }
@@ -152,7 +166,7 @@ private fun ActionButtonsSection(
     isServiceConnected: Boolean,
     hasCameraPermission: Boolean,
     onPrintReceipt: () -> Unit,
-    onPrintQR: () -> Unit,
+    onPrintQR: () -> Unit,       // This lambda should trigger the dialog for custom QR
     onScanQR: () -> Unit,
     onCheckStatus: () -> Unit,
     onCheckServices: () -> Unit,
@@ -161,33 +175,34 @@ private fun ActionButtonsSection(
     // Print Receipt Button
     Button(
         onClick = onPrintReceipt,
-        enabled = isServiceConnected,
+        enabled = isServiceConnected, // Enable only if service is truly connected
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp),
-        shape = RoundedCornerShape(12.dp)
+            .height(48.dp), // Slightly adjusted height
+        shape = RoundedCornerShape(8.dp) // Consistent corner rounding
     ) {
         Text(
-            text = "🖨️ Print Receipt",
+            text = "🖨️ Print Sample Receipt",
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium
         )
     }
 
-    // Print QR Code Button
+    // Button to show the QR Code input dialog
     Button(
-        onClick = onPrintQR,
-        enabled = isServiceConnected,
+        onClick = onPrintQR, // This will call onShowQRDialog(true) in MainActivity
+        enabled = isServiceConnected, // Enable only if service is connected
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp),
-        shape = RoundedCornerShape(12.dp),
+            .height(48.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.tertiary
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
         )
     ) {
         Text(
-            text = "📋 Print QR Code",
+            text = "📝 Print Custom QR Code",
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium
         )
@@ -204,10 +219,11 @@ private fun ActionButtonsSection(
         },
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp),
-        shape = RoundedCornerShape(12.dp),
+            .height(48.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.secondary
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
         )
     ) {
         Text(
@@ -220,13 +236,14 @@ private fun ActionButtonsSection(
     // Check Printer Status Button
     Button(
         onClick = onCheckStatus,
-        enabled = isServiceConnected,
+        enabled = isServiceConnected, // Enable only if service is connected
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp),
-        shape = RoundedCornerShape(12.dp),
+            .height(48.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.outline
+            containerColor = MaterialTheme.colorScheme.surface, // Different color for distinction
+            contentColor = MaterialTheme.colorScheme.onSurface
         )
     ) {
         Text(
@@ -238,17 +255,18 @@ private fun ActionButtonsSection(
 
     // Check Sunmi Services Button
     Button(
-        onClick = onCheckServices,
+        onClick = onCheckServices, // This button can always be enabled
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp),
-        shape = RoundedCornerShape(12.dp),
+            .height(48.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = MaterialTheme.colorScheme.surfaceDim, // Yet another color
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
     ) {
         Text(
-            text = "🛠️ Check Services",
+            text = "🛠️ Check Device Services",
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium
         )
@@ -262,23 +280,22 @@ private fun LastScanResultSection(scanResult: String) {
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "📱 Last Scan Result:",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
+                text = "📱 Last Scanned QR Result:",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = scanResult,
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
+                style = MaterialTheme.typography.bodyMedium
             )
         }
     }
@@ -289,36 +306,39 @@ private fun InfoSection() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        shape = RoundedCornerShape(8.dp)
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f) // More subtle background
+        )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp) // Adjusted spacing
         ) {
             Text(
-                text = "Information:",
-                fontSize = 16.sp,
+                text = "Function Information:",
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
-            Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "• Print Receipt - Print sample sales receipt",
-                fontSize = 12.sp
+                text = "• Print Sample Receipt: Prints a pre-defined sales receipt.",
+                style = MaterialTheme.typography.bodySmall
             )
             Text(
-                text = "• Print QR Code - Print QR code with templates",
-                fontSize = 12.sp
+                text = "• Print Custom QR: Opens a dialog to enter text & print it as a QR code.",
+                style = MaterialTheme.typography.bodySmall
             )
             Text(
-                text = "• Scan QR Code - Scan QR code with camera",
-                fontSize = 12.sp
+                text = "• Scan QR Code: Uses the camera to scan QR codes.",
+                style = MaterialTheme.typography.bodySmall
             )
             Text(
-                text = "• Check Status - Check printer status real-time",
-                fontSize = 12.sp
+                text = "• Check Printer Status: Verifies the current state of the printer.",
+                style = MaterialTheme.typography.bodySmall
             )
             Text(
-                text = "• Check Services - Check Sunmi service availability",
-                fontSize = 12.sp
+                text = "• Check Device Services: Lists available Sunmi services on the device.",
+                style = MaterialTheme.typography.bodySmall
             )
         }
     }

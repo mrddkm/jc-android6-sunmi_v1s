@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-        private const val CONNECTION_RETRY_DELAY = 2000L
+        private const val CONNECTION_RETRY_DELAY = 2000L // Milliseconds
         private const val MAX_CONNECTION_RETRIES = 3
     }
 
@@ -42,11 +42,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         Log.d(TAG, "MainActivity onCreate started")
 
-        // Initialize print service with detailed logging
-        initializePrintService()
+        // Initialize PrintService instance
+        printService = PrintService(this) // Initialize here
+
+        // Attempt to connect to the printer service
+        initializePrintServiceConnection() // Renamed for clarity
 
         setContent {
             SunmiV1sTheme {
@@ -56,9 +58,10 @@ class MainActivity : ComponentActivity() {
                 ) {
                     MainScreen(
                         isServiceConnected = isServiceConnected,
+                        connectionStatusMessage = connectionStatusMessage, // Pass status message
                         onPrintReceipt = { printReceipt() },
                         onScanQR = { scanQRCode() },
-                        onPrintQR = { showQRDialog = true },
+                        onPrintQR = { showQRDialog = true }, // To show the dialog for custom QR
                         onCheckStatus = { checkPrinterStatus() },
                         onCheckServices = { checkSunmiServices() },
                         lastScanResult = lastScanResult,
@@ -71,318 +74,259 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun initializePrintService() {
-        // Check if Sunmi services are available first
+    private fun initializePrintServiceConnection() {
+        Log.d(TAG, "Attempting to initialize printer service connection...")
+        connectionStatusMessage = "Checking for Sunmi services..."
+
         val serviceCheck = ServiceChecker.checkSunmiServices(this)
-        Log.d(TAG, "Service check result:\n${serviceCheck.getReport()}")
+        Log.d(TAG, "Sunmi service check report:\n${serviceCheck.getReport()}")
 
         if (!serviceCheck.hasAnyService) {
-            Log.w(TAG, "No Sunmi services found on this device")
-            connectionStatusMessage = "No Sunmi services found ✗"
-            showToast("Device tidak memiliki service printer Sunmi")
+            Log.w(TAG, "No Sunmi printer services found on this device.")
+            connectionStatusMessage = "No Sunmi printer services found ✗"
+            showToast("This device does not have Sunmi printer services.")
+            isServiceConnected = false // Ensure state reflects this
             return
         }
 
-        printService = PrintService(this)
+        // printService is already initialized in onCreate
         connectionStatusMessage = "Connecting to printer service..."
+        showToast(connectionStatusMessage) // Give initial feedback
 
         printService.initialize { connected ->
-            Log.d(TAG, "Service connection status changed: $connected")
-            isServiceConnected = connected
-
-            if (connected) {
-                connectionStatusMessage = "Printer service connected ✓"
-                connectionRetryCount = 0
-
-                // Show success toast
-                runOnUiThread {
+            runOnUiThread { // Ensure UI updates are on the main thread
+                isServiceConnected = connected
+                if (connected) {
+                    connectionStatusMessage = "Printer service connected ✓"
+                    connectionRetryCount = 0 // Reset retries on successful connection
+                    Log.i(TAG, connectionStatusMessage)
                     showToast(connectionStatusMessage)
-                }
 
-                // Test printer after successful connection
-                lifecycleScope.launch {
-                    delay(1500) // Wait for service to fully initialize
-                    testPrinterConnection()
-                }
-            } else {
-                connectionStatusMessage = "Printer service disconnected ✗"
-
-                // Show error toast
-                runOnUiThread {
-                    showToast(connectionStatusMessage)
-                }
-
-                // Retry connection if not exceeded max retries
-                if (connectionRetryCount < MAX_CONNECTION_RETRIES) {
-                    connectionRetryCount++
-                    Log.d(TAG, "Retrying connection... Attempt $connectionRetryCount")
-
+                    // Test printer connection automatically after a slight delay
                     lifecycleScope.launch {
-                        delay(CONNECTION_RETRY_DELAY)
-                        retryConnection()
+                        delay(1500) // Wait for service to fully stabilize
+                        testPrinterAfterConnection()
                     }
                 } else {
-                    Log.w(TAG, "Max connection retries reached")
-                    runOnUiThread {
-                        showToast("Failed to connect after $MAX_CONNECTION_RETRIES attempts")
-                    }
+                    connectionStatusMessage = "Printer service disconnected ✗"
+                    Log.w(TAG, connectionStatusMessage)
+                    showToast(connectionStatusMessage)
+                    // No automatic retry from here; onResume or manual action will trigger retries
                 }
             }
         }
     }
 
-    private fun retryConnection() {
-        Log.d(TAG, "Retrying printer service connection...")
-        connectionStatusMessage = "Retrying connection... ($connectionRetryCount/$MAX_CONNECTION_RETRIES)"
-
-        runOnUiThread {
+    private fun attemptReconnection() {
+        if (connectionRetryCount < MAX_CONNECTION_RETRIES) {
+            connectionRetryCount++
+            Log.i(TAG, "Attempting to reconnect... (Attempt $connectionRetryCount/$MAX_CONNECTION_RETRIES)")
+            connectionStatusMessage = "Reconnecting... (Attempt $connectionRetryCount)"
             showToast(connectionStatusMessage)
-        }
 
-        printService.disconnect()
-
-        // Wait a bit before reconnecting
-        lifecycleScope.launch {
-            delay(1000)
-            initializePrintService()
+            // Disconnect first to ensure a clean state, then re-initialize
+            printService.disconnect()
+            lifecycleScope.launch {
+                delay(CONNECTION_RETRY_DELAY) // Wait before retrying
+                initializePrintServiceConnection()
+            }
+        } else {
+            Log.w(TAG, "Max connection retries reached. Please check printer or restart app.")
+            connectionStatusMessage = "Connection failed after $MAX_CONNECTION_RETRIES attempts ✗"
+            showToast("Failed to connect after $MAX_CONNECTION_RETRIES attempts. Check printer.")
         }
     }
 
-    private fun testPrinterConnection() {
-        Log.d(TAG, "Testing printer connection...")
-        if (!printService.isConnected()) {
-            Log.w(TAG, "Print service not connected for test")
-            showToast("Print service not connected")
+
+    private fun testPrinterAfterConnection() {
+        Log.d(TAG, "Testing printer connection after successful service bind...")
+        if (!isServiceConnected) { // Double check, should be true here
+            Log.w(TAG, "Service not connected for automated test. This is unexpected.")
             return
         }
-
-        // Test basic printer status
-        val (status, message) = printService.checkPrinterStatus()
-        Log.d(TAG, "Printer test result - Status: $status, Message: $message")
-
-        runOnUiThread {
-            showToast("Printer Status: $message")
+        // Use the new callback version of checkPrinterStatus
+        printService.checkPrinterStatus { status, message ->
+            runOnUiThread {
+                Log.d(TAG, "Automated printer test result - Status: $status, Message: $message")
+                showToast("Printer Status (Auto-Test): $message")
+                // Optionally update connectionStatusMessage based on this detailed status
+                // if (status != 0) connectionStatusMessage = "Printer: $message"
+            }
         }
     }
 
     private fun printReceipt() {
         Log.d(TAG, "Print receipt button clicked")
+        if (!ensureServiceConnectedWithMessage()) return
 
-        if (!isServiceConnected) {
-            Log.w(TAG, "Service not connected for receipt printing")
-            showToast("Printer Service Not Available")
-            return
-        }
-
-        if (!printService.isConnected()) {
-            Log.w(TAG, "Print service not properly connected")
-            showToast("Printer Not Ready")
-            return
-        }
-
-        Log.d(TAG, "Attempting to print receipt...")
-        showToast("Printing receipt...")
-
-        // Use coroutine to prevent blocking UI
-        lifecycleScope.launch {
-            try {
-                val success = printService.printSampleReceipt()
-                Log.d(TAG, "Print receipt result: $success")
-
-                runOnUiThread {
-                    if (success) {
-                        showToast("Receipt printed successfully ✓")
-                    } else {
-                        showToast("Failed to print receipt ✗")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception during receipt printing", e)
-                runOnUiThread {
-                    showToast("Print error: ${e.message}")
-                }
-            }
-        }
+        showToast("Printing sample receipt...")
+        // PrintService.printSampleReceipt now returns Unit
+        // Success/failure is handled by ICallback within SunmiPrinterManager
+        // For MainActivity, we assume the command is sent if isServiceConnected.
+        printService.printSampleReceipt()
+        // We can add a generic "Command sent" message, but specific success is asynchronous
+        // showToast("Print command sent. Check printer.")
     }
 
     private fun printCustomQRCode(qrData: String) {
-        Log.d(TAG, "Print QR code: $qrData")
-
-        if (!printService.isConnected()) {
-            showToast("Printer service not available")
+        Log.d(TAG, "Print custom QR code: $qrData")
+        if (qrData.isBlank()) {
+            showToast("QR data cannot be empty.")
             return
         }
+        if (!ensureServiceConnectedWithMessage()) return
 
-        showToast("Printing QR code...")
-
-        lifecycleScope.launch {
-            try {
-                val success = printService.printQRCode(qrData)
-                Log.d(TAG, "Print QR result: $success")
-
-                runOnUiThread {
-                    if (success) {
-                        showToast("QR code printed successfully ✓")
-                    } else {
-                        showToast("Failed to print QR code ✗")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception during QR printing", e)
-                runOnUiThread {
-                    showToast("QR print error: ${e.message}")
-                }
-            }
-        }
+        showToast("Printing QR code: $qrData")
+        printService.printQRCode(qrData)
+        // showToast("QR print command sent.")
     }
 
     private fun checkPrinterStatus() {
-        Log.d(TAG, "Check printer status clicked")
+        Log.d(TAG, "Check printer status button clicked")
+        if (!ensureServiceConnectedWithMessage(promptReconnect = true)) return
 
-        if (!printService.isConnected()) {
-            showToast("Printer service not available")
-            return
-        }
+        showToast("Checking printer status...") // Feedback that action started
 
-        lifecycleScope.launch {
-            try {
-                val (status, message) = printService.checkPrinterStatus()
-                Log.d(TAG, "Printer status check - Status: $status, Message: $message")
-
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception during status check", e)
-                runOnUiThread {
-                    showToast("Status check error: ${e.message}")
-                }
+        // Use the new callback mechanism
+        printService.checkPrinterStatus { status, message ->
+            runOnUiThread { // Ensure UI updates (Toast) are on the main thread
+                Log.d(TAG, "Manual printer status check - Status: $status, Message: $message")
+                // Display with a longer duration for statuses
+                Toast.makeText(this@MainActivity, "Printer Status: $message", Toast.LENGTH_LONG).show()
             }
         }
     }
 
     private fun checkSunmiServices() {
-        Log.d(TAG, "Check Sunmi services clicked")
+        Log.d(TAG, "Check Sunmi services button clicked")
+        // This is a synchronous check from ServiceChecker
+        val serviceCheck = ServiceChecker.checkSunmiServices(this@MainActivity)
+        val report = serviceCheck.getReport()
+        Log.d(TAG, "Service check report:\n$report")
 
-        lifecycleScope.launch {
-            try {
-                val serviceCheck = ServiceChecker.checkSunmiServices(this@MainActivity)
-                val report = serviceCheck.getReport()
-
-                Log.d(TAG, "Service check report:\n$report")
-
-                runOnUiThread {
-                    // Show detailed report in a toast (truncated) and log full report
-                    val shortReport = if (serviceCheck.hasAnyService) {
-                        "✅ Sunmi services found"
-                    } else {
-                        "❌ No Sunmi services found"
-                    }
-
-                    Toast.makeText(this@MainActivity, shortReport, Toast.LENGTH_LONG).show()
-
-                    // Log full report for debugging
-                    Log.i(TAG, "Full service report:\n$report")
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception during service check", e)
-                runOnUiThread {
-                    showToast("Service check error: ${e.message}")
-                }
-            }
+        val shortReport = if (serviceCheck.hasAnyService) {
+            "✅ Sunmi services found. ${serviceCheck.getReport()}"
+        } else {
+            "❌ No Sunmi services found on this device."
         }
+        Toast.makeText(this@MainActivity, shortReport, Toast.LENGTH_LONG).show()
+        // Log full report for debugging
+        Log.i(TAG, "Full service report by manual check:\n$report")
     }
 
-    private fun scanQRCode() {
-        Log.d(TAG, "Scan QR code clicked")
 
+    private fun scanQRCode() {
+        Log.d(TAG, "Scan QR code button clicked")
         try {
             val integrator = IntentIntegrator(this)
             integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
-            integrator.setPrompt("Scan QR Code")
-            integrator.setCameraId(0)
+            integrator.setPrompt("Scan a QR Code")
+            integrator.setCameraId(0) // Default camera
             integrator.setBeepEnabled(true)
-            integrator.setBarcodeImageEnabled(false)
-            integrator.setOrientationLocked(true)
+            integrator.setBarcodeImageEnabled(false) // Not needed for just content
+            integrator.setOrientationLocked(false) // Allow user to rotate
             integrator.initiateScan()
         } catch (e: Exception) {
             Log.e(TAG, "Exception during QR scan initialization", e)
-            showToast("QR scan error: ${e.message}")
+            showToast("Could not start QR scanner: ${e.message}")
         }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        Log.d(TAG, "onActivityResult - requestCode: $requestCode, resultCode: $resultCode")
 
-        try {
-            val result: IntentResult =
-                IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
-
+        val result: IntentResult? = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (result != null) {
             if (result.contents == null) {
-                Log.d(TAG, "QR scan cancelled")
+                Log.d(TAG, "QR scan cancelled by user.")
                 showToast("Scan cancelled")
-                lastScanResult = ""
+                lastScanResult = "" // Clear last scan
             } else {
-                Log.d(TAG, "QR scan result: ${result.contents}")
+                Log.i(TAG, "QR scan successful. Contents: ${result.contents}")
                 lastScanResult = result.contents
-                showToast("Scanned: ${result.contents}")
+                showToast("Scanned: ${result.contents.take(100)}") // Show a snippet
 
-                // Print scan result if connected
-                if (printService.isConnected()) {
-                    Log.d(TAG, "Printing scan result")
-
-                    lifecycleScope.launch {
-                        val success = printService.printScanResult(result.contents)
-                        Log.d(TAG, "Print scan result success: $success")
-
-                        runOnUiThread {
-                            if (success) {
-                                showToast("Scan result printed ✓")
-                            } else {
-                                showToast("Failed to print scan result ✗")
-                            }
-                        }
-                    }
+                // Optionally print the scanned QR code content
+                if (ensureServiceConnectedWithMessage(promptReconnect = false)) { // Don't prompt aggressively here
+                    Log.d(TAG, "Printing scanned QR content: ${result.contents}")
+                    showToast("Printing scanned result...")
+                    printService.printScanResult(result.contents)
+                    // showToast("Print command for scanned result sent.")
                 } else {
-                    Log.w(TAG, "Cannot print scan result - service not connected")
-                    showToast("Scanned but printer not ready")
+                    Log.w(TAG, "Scanned successfully, but printer not connected to print the result.")
+                    // showToast("Scanned. Printer not ready to print result.") // Already handled by ensureServiceConnected
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception processing scan result", e)
-            showToast("Scan processing error: ${e.message}")
+        } else {
+            // Fallback for other activity results if any
+            Log.d(TAG, "onActivityResult: Result not handled by QR scanner integration.")
         }
     }
 
-    private fun showToast(message: String) {
-        Log.d(TAG, "Toast: $message")
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    private fun showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
+        Log.d(TAG, "Toast: $message") // Log all toasts for debugging
+        Toast.makeText(this, message, duration).show()
     }
 
-    override fun onDestroy() {
-        Log.d(TAG, "MainActivity onDestroy")
-        super.onDestroy()
-        printService.disconnect()
+    // Helper to check service connection and show appropriate messages
+    private fun ensureServiceConnectedWithMessage(promptReconnect: Boolean = true): Boolean {
+        if (!isServiceConnected) {
+            Log.w(TAG, "Action requires printer service, but it's not connected.")
+            var message = "Printer service not connected. Please wait or check connection."
+            if (promptReconnect && connectionRetryCount >= MAX_CONNECTION_RETRIES) {
+                message += "\nMax retries reached. Please check printer & restart app."
+            }
+            showToast(message, Toast.LENGTH_LONG)
+
+            // If not connected and max retries not reached, and prompt is true, attempt reconnect
+            if (promptReconnect && connectionRetryCount < MAX_CONNECTION_RETRIES) {
+                Log.d(TAG, "Prompting reconnection from ensureServiceConnectedWithMessage.")
+                attemptReconnection() // Try to reconnect if appropriate
+            }
+            return false
+        }
+        return true
     }
+
 
     override fun onResume() {
         super.onResume()
-        Log.d(TAG, "MainActivity onResume - Service connected: $isServiceConnected")
-
-        // Check connection status on resume
+        Log.i(TAG, "MainActivity onResume. Service connected: $isServiceConnected, Retry count: $connectionRetryCount")
+        // If not connected and haven't exhausted retries, try to connect.
+        // This handles cases where the service might have disconnected while paused,
+        // or initial connection failed and user brings app to foreground.
         if (!isServiceConnected && connectionRetryCount < MAX_CONNECTION_RETRIES) {
-            Log.d(TAG, "Service not connected on resume, attempting reconnection...")
+            Log.d(TAG, "Service not connected on resume, attempting to initialize/reconnect...")
+            // Delay slightly to allow system to settle if app is just starting
             lifecycleScope.launch {
-                delay(1000)
-                initializePrintService()
+                delay(1000) // 1 second delay
+                initializePrintServiceConnection()
             }
+        } else if (isServiceConnected) {
+            // If already connected, maybe a quick status check or ensure UI reflects connected state
+            connectionStatusMessage = "Printer service connected ✓"
+        } else {
+            connectionStatusMessage = "Connection failed after $MAX_CONNECTION_RETRIES attempts ✗"
         }
     }
 
     override fun onPause() {
         super.onPause()
         Log.d(TAG, "MainActivity onPause")
+        // Note: We are not disconnecting the service onPause by default
+        // to allow printing to continue if it was initiated and the app is briefly paused.
+        // The service connection is managed by SunmiPrinterManager's lifecycle.
+    }
+
+    override fun onDestroy() {
+        Log.i(TAG, "MainActivity onDestroy. Disconnecting print service.")
+        super.onDestroy()
+        // It's important to disconnect the service when the activity is destroyed
+        // to release resources and unbind the service.
+        if (::printService.isInitialized) { // Check if printService was initialized
+            printService.disconnect()
+        }
     }
 }
